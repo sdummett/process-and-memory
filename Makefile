@@ -1,7 +1,7 @@
 ## --- SYSCALL DEVELOPMENT PART --- ##
 
 dev:
-	cp src/kernelspace/get_pid_info.c linux-4.19.322/kernel/
+	cp src/get_pid_info/kernelspace/get_pid_info.c linux-4.19.322/kernel/
 	make -j"$$(nproc)" -C ./linux-4.19.322
 	./dev_scripts/exec_qemu_with_kernel.sh
 
@@ -9,8 +9,13 @@ dev_mount_root_fs:
 	./dev_scripts/mount_root_fs.sh
 
 # note that root_fs must be mounted
-dev_copy_userspace_code_to_root_fs:
-	sudo cp src/userspace/* /mnt/kroot_fs/root
+dev_copy_get_pid_info_userspace_code_to_root_fs:
+	sudo cp src/get_pid_info/userspace/* /mnt/kroot_fs/root
+
+dev_copy_test_to_root_fs:
+	sudo cp src/tests/* /mnt/kroot_fs/root
+
+dev_copy_to_root_fs: dev_copy_get_pid_info_userspace_code_to_root_fs dev_copy_test_to_root_fs
 
 # todo qemu dev loop
 # - ajouter le script de creation d'un root_fs
