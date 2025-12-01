@@ -15,10 +15,12 @@
 # Afin de quitter le script des qu'une erreur se produit
 set -e #x
 
-# ROOT_FS must be an absolute path to root filesystem disk
 CMD=$(basename $0)
+# the path to where root filesystem image will live
 ROOT_FS=$1
+# the temporary mountpoint that the script will use use to setup the root filesystem
 MOUNTPOINT=/mnt/$CMD-root_fs
+# the password of the root user inside the the newly created img
 ROOT_PASSWORD=root
 
 function mount_root_fs
@@ -88,10 +90,6 @@ function create_root_fs
 }
 
 # >>> Main <<< #
-if [[ ! "$ROOT_FS" = /* ]]; then
-	echo "$0: The path to the root filesystem must be absolute"
-	exit 1;
-fi
 
 # -z: test si la chaine est vide
 if [[ -z "$ROOT_FS" ]]; then
