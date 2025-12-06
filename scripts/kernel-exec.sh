@@ -7,12 +7,12 @@ set -e #x
 
 CMD=$(basename $0)
 # the path to where root filesystem image lives
-ROOT_FS=$2
+ROOTFS_IMG=$2
 # # the path to where the kernel image lives
 LINUX_KERNEL_IMAGE=$1
 
 # -z: test si la chaine est vide
-if [[ -z "$LINUX_KERNEL_IMAGE" || -z "$ROOT_FS" ]]; then
+if [[ -z "$LINUX_KERNEL_IMAGE" || -z "$ROOTFS_IMG" ]]; then
 	echo "$0: usage: $CMD <linux_kernel_image_path> <root_filesystem_path>"
 	exit 1
 fi
@@ -21,7 +21,7 @@ fi
 qemu-system-x86_64 \
   -kernel $LINUX_KERNEL_IMAGE \
   -append "root=/dev/vda rw console=ttyS0" \
-  -drive file=$ROOT_FS,if=virtio,format=raw \
+  -drive file=$ROOTFS_IMG,if=virtio,format=raw \
   -m 1024 \
   -nographic
 

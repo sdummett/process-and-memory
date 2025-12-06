@@ -41,7 +41,7 @@ function mount_root_fs
 	mount -t proc /proc $MOUNTPOINT/proc
 	mount -t sysfs /sys $MOUNTPOINT/sys
 	mount -t tmpfs tmpfs $MOUNTPOINT/run
-
+	sleep 10
 	# > DEBUG_START
 	# lsblk
 	# tree -L 1 $MOUNTPOINT
@@ -83,6 +83,7 @@ function create_root_fs
 	# on installe la Debian minimal dedans (on choisi une version qui supportera notre kernel linux-4.x.y).
 	debootstrap --arch=amd64 bullseye $MOUNTPOINT http://deb.debian.org/debian
 	sudo chroot $MOUNTPOINT /bin/bash -c "echo 'root:$ROOT_PASSWORD' | chpasswd"
+	sleep 10
 
 	## note: if needed you can install vim et gcc by chrooting in the filesystem
 

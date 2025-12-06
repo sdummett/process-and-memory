@@ -1,84 +1,75 @@
 # >> LINUX SYSCALLS << #
 
-# DEVELOPMENT (using qemu to test the kernel with a minimal root filesystem)
 
-LINUX_TREE				:= ./linux-4.19.322
-ROOT_FS					:= ./disks/root_fs-ext4.img
-LINUX_KERNEL_IMAGE		:= $(LINUX_TREE)/arch/x86/boot/bzImage
+LINUX_ARCHIVE			:= linux-4.19.322.tar.xz
+LINUX_DIR				:= linux-4.19.322
+LINUX_CONFIG			:= linux-4.19.322/.config
+LINUX_IMG				:= linux-4.19.322/arch/x86/boot/bzImage
+DISKS_DIR				:= disks
+ROOTFS_IMG				:= $(DISKS_DIR)/rootfs.ext4
 JOBS					:= $(shell echo $$(( $$(nproc) - 1 )))
-KERNEL_CONFIG_NEED_YES	:= .kernel_config_need_yes
 
-dev: linux
-	@echo ">>> DEV <<<"
-	sudo ./scripts/dev/create_root_fs.sh $(ROOT_FS)
-	./scripts/dev/execute_kernel_plus_rootfs_with_qemu.sh $(LINUX_KERNEL_IMAGE) $(ROOT_FS)
+
+.PHONY: all linux dev clean fclean
+
+
+all: dev
+
+
+linux: $(LINUX_ARCHIVE) $(LINUX_DIR) $(LINUX_CONFIG) $(LINUX_IMG)
+
+
+# using qemu to test the kernel with a minimal root filesystem
+dev: $(ROOTFS_IMG) linux
+	@echo "[EXEC] qemu: kernel+rootfs"
+	./scripts/kernel-exec.sh $(LINUX_IMG) $(ROOTFS_IMG)
+
+
+$(LINUX_IMG):
+	@echo "[COMPILE] linux"
+	yes | $(MAKE) -C $(LINUX_DIR) -j$(JOBS) CC="gcc -std=gnu11" HOSTCC="gcc -std=gnu11"
 
 # Setup du fichier de config
 # Partiel car a la compilation on nous promptera afin d'editer .config
 # Ca aura ete preferable d'avoir fini la configuration de .config ici
-setup_kernel:
-	echo ">>> SETUP KERNEL <<<"
-	make -C $(LINUX_TREE) defconfig
-	echo "CONFIG_VIRTIO_PCI=y" >> $(LINUX_TREE)/.config
-	touch $(KERNEL_CONFIG_NEED_YES)
+$(LINUX_CONFIG):
+	@echo "[CONFIG] linux .config (defconfig)"
+	make -C $(LINUX_DIR) defconfig
+	echo "CONFIG_VIRTIO_PCI=y" >> $(LINUX_DIR)/.config
 
-# Compilation du kernel
-linux:
-	@if [ -f "$(KERNEL_CONFIG_NEED_YES)" ]; then \
-		echo "$(KERNEL_CONFIG_NEED_YES) existe, on pipe des 'y' dans la config kernel"; \
-		yes | $(MAKE) -C $(LINUX_TREE) -j$(JOBS); \
-		rm -f "$(KERNEL_CONFIG_NEED_YES)"; \
-	else \
-		echo "$(KERNEL_CONFIG_NEED_YES) n'existe pas, compilation normale du kernel"; \
-		$(MAKE) -C $(LINUX_TREE) -j$(JOBS); \
-	fi
 
-all: setup_kernel dev
+$(LINUX_ARCHIVE):
+	@echo "[DOWNLOAD] $(LINUX_ARCHIVE)"
+	wget -O $(LINUX_ARCHIVE) https://cdn.kernel.org/pub/linux/kernel/v4.x/$(LINUX_ARCHIVE)
 
-fclean:
-	make -C $(LINUX_TREE) mrproper
-	rm -f $(ROOT_FS)
-	rm -f $(KERNEL_CONFIG_NEED_YES)
 
-# ---------------------------------------------------------------------------- #
-# CURRENT_SYSTEM (using the current system to install the kernel (reboot required))
+## gcc + flex + bison needed, need to check it
+# sudo dnf install openssl-devel openssl-devel-engine
+## en gros il faut connaitre les paquets requis par la compilation du kernel
+$(LINUX_DIR):
+	@echo "[UNPACK] $(LINUX_ARCHIVE)"
+	tar -xvf $(LINUX_ARCHIVE)
 
-# ---------------------------------------------------------------------------- #
-# FOREIGN_SYSTEM (using a system in a disk to install the kernel and test this system in a vm)
 
-# ---------------------------------------------------------------------------- #
+$(ROOTFS_IMG):
+	@mkdir -p $(DISKS_DIR)
+	@echo "[INSTALL] $(ROOTFS_IMG)"
+	./scripts/busybox.sh --reinstall $(ROOTFS_IMG)
 
-## --- SYSCALL DEVELOPMENT PART --- ##
 
-# dev:
-# 	cp src/get_pid_info/kernelspace/get_pid_info.c linux-4.19.322/kernel/
-# 	make -j"$$(nproc)" -C ./linux-4.19.322
-# 	./dev_scripts/exec_qemu_with_kernel.sh
+clean:
+	@echo "[CLEAN]"
+	$(MAKE) -C $(LINUX_DIR) mrproper || true # supprime .config arch/x86/boot/bzImage
 
-# dev_mount_root_fs:
-# 	./dev_scripts/mount_root_fs.sh
 
-# # note that root_fs must be mounted
-# dev_copy_get_pid_info_userspace_code_to_root_fs:
-# 	sudo cp src/get_pid_info/userspace/* /mnt/kroot_fs/root
+fclean: clean
+	@echo "[FCLEAN]"
+	rm -f $(ROOTFS_IMG)
+	rm -rf $(LINUX_DIR)
+	rm -rf $(LINUX_ARCHIVE)
 
-# dev_copy_test_to_root_fs:
-# 	sudo cp src/tests/* /mnt/kroot_fs/root
-
-# dev_copy_to_root_fs: dev_copy_get_pid_info_userspace_code_to_root_fs dev_copy_test_to_root_fs
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-
-# todo qemu dev loop
-# - ajouter le script de creation d'un root_fs
 
 # todo common
 # - automatiser l'ajout d'un syscall dans 'arch/x86/entry/syscalls/syscall_64.tbl'
 # - automatiser l'ajout de '+obj-y += get_pid_info.o' dans kernel/Makefile
 # - automatiser l'ajout du code user et kernel space
-
-## --- SYSCALL INSTALLATION IN A REAL DISTRO PART --- ##
-
-
-
-
