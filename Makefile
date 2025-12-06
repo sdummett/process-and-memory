@@ -57,6 +57,11 @@ $(ROOTFS_IMG):
 	./scripts/busybox.sh --reinstall $(ROOTFS_IMG)
 
 
+bin/get_pid_info/tests/dummy-test:
+	mkdir -p bin/get_pid_info/tests/
+	gcc -Wall -O2 -static -o bin/get_pid_info/tests/dummy-test src/get_pid_info/tests/dummy-test.c
+	./scripts/busybox.sh --add disks/rootfs.ext4 bin/get_pid_info/tests/dummy-test
+
 clean:
 	@echo "[CLEAN]"
 	$(MAKE) -C $(LINUX_DIR) mrproper || true # supprime .config arch/x86/boot/bzImage

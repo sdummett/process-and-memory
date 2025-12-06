@@ -7,30 +7,33 @@
 # - fais échouer un pipeline si une commande au milieu se plante (pipefail)
 set -e #x
 
+CMD=$1
 ROOTFS_IMG=$2
-ROOTFS_DIR=$ROOTFS_IMG.rootfsdir
-MOUNTPOINT=/mnt/busy_rootfs
+BIN=$3
 
 if [[ -z "$ROOTFS_IMG" ]]; then
-	echo "$0: usage : $0 [--install | --reinstall] <ROOTFS_IMG>"
-	echo "$0: ROOTFS_IMG est le chemin ou l'image se trouvera"
+	echo "$0: usage :"
+	echo "  $0 --install   <ROOTFS_IMG>"
+	echo "  $0 --reinstall <ROOTFS_IMG>"
+	echo "  $0 --add       <ROOTFS_IMG> <BIN>"
 	exit 1
 fi
 
 function install
 {
-	if [ -f $ROOTFS_IMG ]; then
-		echo "$0: $ROOTFS_IMG existe deja."
+	local img="$ROOTFS_IMG"
+
+	if [ -f $img ]; then
+		echo "$0: $img existe deja."
 		exit 0
 	fi
 	### (1) preparer l'aborescence de base
 
-	sudo rm -rf "$ROOTFS_DIR"
-	sudo mkdir "$ROOTFS_DIR"
+	local rootfs_dir=$(mktemp -d /tmp/rootfs.ext4.XXXXXX)
 
-	sudo mkdir -p "$ROOTFS_DIR"/{bin,sbin,etc,proc,sys,dev,dev/pts,tmp,root}
-	sudo mkdir -p "$ROOTFS_DIR"/usr/{bin,sbin}
-	sudo chmod 1777 "$ROOTFS_DIR/tmp"   # /tmp
+	sudo mkdir -p "$rootfs_dir"/{bin,sbin,etc,proc,sys,dev,dev/pts,tmp,root}
+	sudo mkdir -p "$rootfs_dir"/usr/{bin,sbin}
+	sudo chmod 1777 "$rootfs_dir/tmp"   # /tmp
 	if ! BUSYBOX_BIN=$(command -v busybox 2>/dev/null); then
 		echo "$0: Erreur : busybox n'est pas installe ou introuvable dans le PATH." >&2
 		exit 1
@@ -39,28 +42,28 @@ function install
 	echo "$0: BusyBox = $BUSYBOX_BIN"
 
 	# mettre busybox dans /bin
-	sudo cp "$BUSYBOX_BIN" "$ROOTFS_DIR/bin/busybox"
+	sudo cp "$BUSYBOX_BIN" "$rootfs_dir/bin/busybox"
 
 	# copier les libs necessaires si busybox est dynamique
 	for lib in $(ldd "$BUSYBOX_BIN" | awk '{if (substr($3,1,1)=="/") print $3}'); do
-		sudo cp --parents "$lib" "$ROOTFS_DIR"
+		sudo cp --parents "$lib" "$rootfs_dir"
 	done
 
 	### (3) creer quelques symlinks importants (sh, ls, etc.)
 
 	for app in sh ash ls cat mount umount dmesg echo ps top uname \
 			mkdir rmdir mv cp rm vi sleep kill ping; do
-		sudo ln -sf /bin/busybox "$ROOTFS_DIR/bin/$app"
+		sudo ln -sf /bin/busybox "$rootfs_dir/bin/$app"
 	done
 
 	### (4) /dev minimal (au cas ou devtmpfs ne monte pas tout seul)
 
-	sudo mknod -m 600 "$ROOTFS_DIR/dev/console" c 5 1 || true
-	sudo mknod -m 666 "$ROOTFS_DIR/dev/null"    c 1 3 || true
+	sudo mknod -m 600 "$rootfs_dir/dev/console" c 5 1 || true
+	sudo mknod -m 666 "$rootfs_dir/dev/null"    c 1 3 || true
 
 	### (5) script /init ultra simple
 
-	cat << 'EOF' | sudo tee "$ROOTFS_DIR/init" >/dev/null
+	cat << 'EOF' | sudo tee "$rootfs_dir/init" >/dev/null
 #!/bin/sh
 
 echo "[init] Booting minimal BusyBox rootfs"
@@ -77,58 +80,113 @@ echo "[init] Spawning shell on /dev/console"
 exec /bin/sh </dev/console >/dev/console 2>&1
 EOF
 
-	sudo chmod +x "$ROOTFS_DIR/init"
+	sudo chmod +x "$rootfs_dir/init"
 
-	echo "$0: [+] Rootfs BusyBox construit dans $ROOTFS_DIR"
+	echo "$0: [+] Rootfs BusyBox construit dans $rootfs_dir"
 
 	### 6) construire l'image ext4
 
 	# taille du rootfs en Mo
-	SIZE_MB=$(sudo du -s -BM "$ROOTFS_DIR" | cut -f1 | tr -d M)
-	ROOTFS_IMG_MB=$((SIZE_MB + 64))   # marge de 64 Mo
+	local size_mb=$(sudo du -s -BM "$rootfs_dir" | cut -f1 | tr -d M)
+	local img_mb=$((size_mb + 64))   # marge de 64 Mo
 
-	echo "$0: [+] Taille rootfs: ${SIZE_MB}M, image: ${ROOTFS_IMG_MB}M"
+	echo "$0: [+] Taille rootfs: ${size_mb}M, image: ${img_mb}M"
 
-	sudo rm -f "$ROOTFS_IMG"
-	sudo dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count="$ROOTFS_IMG_MB"
-	sudo mkfs.ext4 "$ROOTFS_IMG"
+	sudo rm -f "$img"
+	sudo dd if=/dev/zero of="$img" bs=1M count="$img_mb"
+	sudo mkfs.ext4 "$img"
 
 	# copier le rootfs dans l'image
-	sudo mkdir -p $MOUNTPOINT
-	sudo mount -o loop "$ROOTFS_IMG" $MOUNTPOINT
+	local mp=$(mktemp -d /tmp/busyrootfs.XXXXXX)
 
-	sudo rsync -aHAX --numeric-ids "$ROOTFS_DIR"/ $MOUNTPOINT
+	sudo mkdir -p "$mp"
+	sudo mount -o loop "$img" "$mp"
 
-	sudo umount $MOUNTPOINT
-	sudo rm -r "$MOUNTPOINT"
-	sudo rm -r "$ROOTFS_DIR"
+	sudo rsync -aHAX --numeric-ids "$rootfs_dir"/ "$mp"
 
-	sudo chown $USER:$USER "$ROOTFS_IMG"
+	sudo umount "$mp"
+	sudo rmdir "$mp"
+	sudo rm -rf "$rootfs_dir"
 
-	echo "$0: [+] Image rootfs prête: $ROOTFS_IMG"
+	sudo chown $USER:$USER "$img"
+
+	echo "$0: [+] Image rootfs prête: $img"
 	exit 0
 }
 
 function reinstall
 {
 	echo "$0: [+] Re-installation de busybox"
-
-	sudo rm -rf "$MOUNTPOINT"
-	sudo rm -rf "$ROOTFS_DIR"
 	sudo rm -rf "$ROOTFS_IMG"
 
 	install
 }
 
-case "$1" in
+function add()
+{
+	local img="$ROOTFS_IMG"
+	local bin="$BIN"
+
+	if [[ -z "$img" || -z "$bin" ]]; then
+		echo "$0: usage : $0 --add <ROOTFS_IMG> <BIN>" >&2
+		exit 1
+	fi
+
+	if [[ ! -f "$img" ]]; then
+		echo "$0: Erreur : image $img introuvable." >&2
+		exit 1
+	fi
+
+	if [[ ! -f "$bin" ]]; then
+		echo "$0: Erreur : binaire $bin introuvable." >&2
+		exit 1
+	fi
+
+	echo "$0: [+] Montage de l'image $img"
+
+	local mp=$(mktemp -d /tmp/busyrootfs.XXXXXX)
+
+	sudo mount -o loop "$img" "$mp"
+
+	echo "$0: [+] Copie de $bin vers $mp/bin/"
+	sudo cp "$bin" "$mp/bin/"
+	sudo chmod +x "$mp/bin/$(basename "$bin")"
+
+	echo "$0: [+] Démontage"
+	sudo umount "$mp"
+	rmdir "$mp"
+
+	echo "$0: [+] Binaire ajouté : /bin/$(basename "$bin") dans $img"
+}
+
+
+case "$CMD" in
 	--install)
-	install
-	;;
+		if [[ -z "$ROOTFS_IMG" ]]; then
+			echo "$0: usage : $0 --install <ROOTFS_IMG>" >&2
+			exit 1
+		fi
+		install
+		;;
+
 	--reinstall)
-	reinstall
-	;;
+		if [[ -z "$ROOTFS_IMG" ]]; then
+			echo "$0: usage : $0 --reinstall <ROOTFS_IMG>" >&2
+			exit 1
+		fi
+		reinstall
+		;;
+
+	--add)
+		add "$@"
+		;;
+
 	*)
-	echo "Option inconnue : $1"
-	usage
-	;;
+		echo "Option inconnue : $CMD" >&2
+		echo "$0: usage :"
+		echo "  $0 --install   <ROOTFS_IMG>"
+		echo "  $0 --reinstall <ROOTFS_IMG>"
+		echo "  $0 --add       <ROOTFS_IMG> <BIN>"
+		exit 1
+		;;
 esac
