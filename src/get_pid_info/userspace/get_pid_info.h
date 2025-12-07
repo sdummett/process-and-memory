@@ -8,7 +8,7 @@
 #include <errno.h>
 
 #ifndef __NR_get_pid_info
-#define __NR_get_pid_info 335
+#define __NR_get_pid_info NNN
 #endif
 
 #define PROCINFO_PATH_MAX 256
@@ -29,6 +29,9 @@ typedef struct pid_info {
     char            current_working_directory[PROCINFO_PATH_MAX];
 } pid_info_t;
 
-long get_pid_info (struct pid_info *pid_info, int pid);
+long get_pid_info (struct pid_info *pid_info, int pid)
+{
+	return syscall(__NR_get_pid_info, pid_info, pid);
+}
 
 #endif // GET_PID_INFO_H
