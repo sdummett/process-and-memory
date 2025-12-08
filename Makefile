@@ -11,7 +11,7 @@ JOBS					:= $(shell echo $$(( $$(nproc) - 1 )))
 INCLUDE					:= src/get_pid_info/userspace/
 
 
-.PHONY: all linux dev clean fclean install-get_pid_info
+.PHONY: all linux dev clean fclean install-get_pid_info vm
 
 
 all: dev
@@ -84,6 +84,12 @@ bin/get_pid_info/tests/test-1:
 	gcc -Wall -O2 -static -I$(INCLUDE) -o bin/get_pid_info/tests/test-1 src/get_pid_info/tests/test-1.c
 	./scripts/busybox.sh --add disks/rootfs.ext4 bin/get_pid_info/tests/test-1
 
+# Creation d'une vm pour les besoins de l'ecole
+vm-install:
+	./scripts/vm.sh --install ./disks/debian.img
+# Lancement d'une vm pour les besoins de l'ecole
+vm-launch:
+	./scripts/vm.sh --launch ./disks/debian.img
 
 clean:
 	@echo "[CLEAN]"
