@@ -118,6 +118,20 @@ vm-install:
 vm-launch:
 	./scripts/vm.sh --launch ./disks/debian.img
 
+remove-linux:
+	@if ! uname -r | grep 4.19.322 ; then \
+		echo "[REMOVE] linux-4.19.322 from system and grub"; \
+		sudo rm /boot/vmlinuz-4.19.322; \
+		sudo rm /boot/initrd.img-4.19.322; \
+		sudo rm /boot/System.map-4.19.322; \
+		sudo rm /boot/config-4.19.322; \
+		sudo rm -rf /lib/modules/4.19.322; \
+		sudo update-initramfs -d -k 4.19.322; \
+		sudo update-grub; \
+	else \
+		echo "[SKIP] linux-4.19.322 est actuellement en cours d'utilisation"; \
+	fi
+
 
 clean:
 	@echo "[CLEAN]"
