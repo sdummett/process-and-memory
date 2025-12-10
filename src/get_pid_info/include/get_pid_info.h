@@ -8,7 +8,7 @@
 #include <errno.h>
 
 #ifndef __NR_get_pid_info
-#define __NR_get_pid_info NNN
+#define __NR_get_pid_info 548
 #endif
 
 #define PROCINFO_PATH_MAX 256
