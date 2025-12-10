@@ -7,7 +7,7 @@ DISKS_DIR				:= disks
 DEV_ROOTFS_IMG			:= $(DISKS_DIR)/rootfs.ext4
 JOBS					:= $(shell echo $$(( $$(nproc) - 1 )))
 INCLUDE					:= src/get_pid_info/include/
-LOCAL_SYSCALL_SRC		:= src/get_pid_info/kernelspace/get_pid_info.c
+LOCAL_SYSCALL_SRC		:= src/get_pid_info/kernel/get_pid_info.c
 LINUX_SYSTEM_SRC_PATH	:= /usr/src/linux-4.19.322
 
 
@@ -82,7 +82,7 @@ busybox:
 
 
 # using qemu to test the kernel with a minimal root filesystem
-dev: /usr/src/linux-4.19.322 $(DEV_ROOTFS_IMG) test-1-in-busybox add-get-pid-info-to-syscall-table add-get-pid-info-obj busybox
+dev: /usr/src/linux-4.19.322 $(DEV_ROOTFS_IMG) test-1-in-busybox add-get-pid-info-to-syscall-table add-get-pid-info-obj
 	@echo "[JOBS] $(JOBS)"
 	@echo "[SETUP] linux kernel '.config' to defconfig"
 	@$(MAKE) -C $(LINUX_SYSTEM_SRC_PATH) defconfig
