@@ -133,18 +133,19 @@ vm-install:
 vm-launch:
 	./scripts/vm.sh --launch ./disks/debian.img
 
+LINUX_VER_TO_RM=4.19.322
 remove-linux:
-	@if ! uname -r | grep 4.19.322 ; then \
-		echo "[REMOVE] linux-4.19.322 from system and grub"; \
-		sudo rm /boot/vmlinuz-4.19.322; \
-		sudo rm /boot/initrd.img-4.19.322; \
-		sudo rm /boot/System.map-4.19.322; \
-		sudo rm /boot/config-4.19.322; \
-		sudo rm -rf /lib/modules/4.19.322; \
-		sudo update-initramfs -d -k 4.19.322; \
+	@if ! uname -r | grep $(LINUX_VER_TO_RM) ; then \
+		echo "[REMOVE] linux-$(LINUX_VER_TO_RM) from system and grub"; \
+		sudo rm /boot/vmlinuz-$(LINUX_VER_TO_RM); \
+		sudo rm /boot/initrd.img-$(LINUX_VER_TO_RM); \
+		sudo rm /boot/System.map-$(LINUX_VER_TO_RM); \
+		sudo rm /boot/config-$(LINUX_VER_TO_RM); \
+		sudo rm -rf /lib/modules/$(LINUX_VER_TO_RM); \
+		sudo update-initramfs -d -k $(LINUX_VER_TO_RM); \
 		sudo update-grub; \
 	else \
-		echo "[SKIP] linux-4.19.322 est actuellement en cours d'utilisation"; \
+		echo "[SKIP] linux-$(LINUX_VER_RO_RM) est actuellement en cours d'utilisation"; \
 	fi
 
 
