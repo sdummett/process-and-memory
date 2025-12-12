@@ -132,6 +132,11 @@ vm-install:
 # Lancement d'une vm debian
 vm-launch:
 	./scripts/vm.sh --launch ./disks/debian.img
+# Hack: réinitialise l'IP de la VM via DHCP sur enp0s3 (souvent DOWN/ sans IP avec le kernel custom),
+# ce qui rétablit la connectivité réseau et donc l'accès SSH depuis l'hôte.
+# Force l'obtention d'une IP (10.0.2.x typiquement sous QEMU user-net) pour rendre sshd joignable.
+vm-net-fix:
+	sudo dhclient -v enp0s3
 
 LINUX_VER_TO_RM=4.19.322
 remove-linux:
