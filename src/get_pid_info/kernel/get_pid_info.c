@@ -62,7 +62,7 @@ static void fill_paths_for_task(struct task_struct *task, pid_info_t *kpid_info)
 	kpid_info->root_path[0] = '\0';
 	kpid_info->current_working_directory[0] = '\0';
 
-	/* certains threads noyau n'ont pas de fs_struct */
+	// certains threads noyau n'ont pas de fs_struct
 	rcu_read_lock();
 	fs = task->fs;
 	if (!fs) {
@@ -70,32 +70,32 @@ static void fill_paths_for_task(struct task_struct *task, pid_info_t *kpid_info)
 		return;
 	}
 
-	/* ces helpers prennent les refs nécessaires sur root/pwd */
+	// ces helpers prennent les refs nécessaires sur root/pwd
 	get_fs_root(fs, &root);
 	get_fs_pwd(fs, &pwd);
 	rcu_read_unlock();
 
 	buf = kmalloc(PATH_MAX, GFP_KERNEL);
 	if (!buf) {
-		/* pas de mémoire -> on rend les refs et on laisse les strings vides */
+		// pas de mémoire -> on rend les refs et on laisse les strings vides
 		path_put(&root);
 		path_put(&pwd);
 		return;
 	}
 
-	/* root path */
+	// root path
 	p = d_path(&root, buf, PATH_MAX);
 	if (!IS_ERR(p))
 		strlcpy(kpid_info->root_path, p, sizeof(kpid_info->root_path));
 
-	/* cwd */
+	// cwd
 	p = d_path(&pwd, buf, PATH_MAX);
 	if (!IS_ERR(p))
 		strlcpy(kpid_info->current_working_directory,
 			p, sizeof(kpid_info->current_working_directory));
 
 	kfree(buf);
-	path_put(&root);  /* rendu de la ref */
+	path_put(&root);  // rendu de la ref
 	path_put(&pwd);
 }
 

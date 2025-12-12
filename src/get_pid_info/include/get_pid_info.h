@@ -29,6 +29,17 @@ typedef struct pid_info {
     char            current_working_directory[PROCINFO_PATH_MAX];
 } pid_info_t;
 
+// conversion état -> chaine lisible
+const char *state_to_str(int state)
+{
+    switch (state) {
+    case PROC_STATE_RUNNING:  return "RUNNING";
+    case PROC_STATE_SLEEPING: return "SLEEPING";
+    case PROC_STATE_ZOMBIE:   return "ZOMBIE";
+    default:                  return "UNKNOWN";
+    }
+}
+
 long get_pid_info (struct pid_info *pid_info, int pid)
 {
 	return syscall(__NR_get_pid_info, pid_info, pid);

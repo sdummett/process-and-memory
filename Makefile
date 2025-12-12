@@ -39,8 +39,13 @@ add-get-pid-info-obj:
 # copie des sources linux vers /usr/src/linux-4.19.322
 /usr/src/linux-4.19.322:
 	@echo "[UNPACK] $(LINUX_ARCHIVE)"
-	tar -xvf $(LINUX_ARCHIVE) -C /tmp
-	sudo mv /tmp/linux-4.19.322 /usr/src/
+	@if [ ! -f $(LINUX_ARCHIVE) ]; then \
+		echo "[INFO] You should run 'make $(LINUX_ARCHIVE)' to download the Linux archive"; \
+		exit 1; \
+	else \
+		tar -xvf $(LINUX_ARCHIVE) -C /tmp; \
+		sudo mv /tmp/linux-4.19.322 /usr/src/; \
+	fi
 
 
 # installation du kernel dans /usr/src +
@@ -48,7 +53,7 @@ add-get-pid-info-obj:
 # build de linux +
 # installation de l'image dans /boot +
 # configuration de grub
-build-linux-in-system: /usr/src/linux-4.19.322 add-get-pid-info-to-syscall-table add-get-pid-info-obj bin/get_pid_info/tests/test-1
+build-linux-in-system: /usr/src/linux-4.19.322 add-get-pid-info-to-syscall-table add-get-pid-info-obj bin/get_pid_info/tests/test-1 bin/get_pid_info/tests/pidinfo
 	@echo "[JOBS] $(JOBS)"
 	@echo "[SETUP] linux kernel '.config' to defconfig"
 	@$(MAKE) -C $(LINUX_SYSTEM_SRC_PATH) defconfig
@@ -71,9 +76,13 @@ $(DEV_ROOTFS_IMG):
 	@echo "[INSTALL] $(DEV_ROOTFS_IMG)"
 	./scripts/busybox.sh --reinstall $(DEV_ROOTFS_IMG)
 
-# ajoute du test de get_pid_info dans le rootfs
+# ajout du test de get_pid_info dans le rootfs
 test-1-in-busybox: bin/get_pid_info/tests/test-1
 	./scripts/busybox.sh --add disks/rootfs.ext4 bin/get_pid_info/tests/test-1
+
+# ajout du test de get_pid_info dans le rootfs
+pidinfo-in-busybox: bin/get_pid_info/tests/pidinfo
+	./scripts/busybox.sh --add disks/rootfs.ext4 bin/get_pid_info/tests/pidinfo
 
 # execution du kernel+rootfs grace a qemu
 busybox:
@@ -82,7 +91,7 @@ busybox:
 
 
 # using qemu to test the kernel with a minimal root filesystem
-dev: /usr/src/linux-4.19.322 $(DEV_ROOTFS_IMG) test-1-in-busybox add-get-pid-info-to-syscall-table add-get-pid-info-obj
+dev: /usr/src/linux-4.19.322 $(DEV_ROOTFS_IMG) test-1-in-busybox pidinfo-in-busybox add-get-pid-info-to-syscall-table add-get-pid-info-obj
 	@echo "[JOBS] $(JOBS)"
 	@echo "[SETUP] linux kernel '.config' to defconfig"
 	@$(MAKE) -C $(LINUX_SYSTEM_SRC_PATH) defconfig
@@ -105,16 +114,22 @@ bin/get_pid_info/tests/test-1:
 	mkdir -p bin/get_pid_info/tests/
 	gcc -Wall -O2 -static -I$(INCLUDE) -o bin/get_pid_info/tests/test-1 src/get_pid_info/tests/test-1.c
 
+# compilation de pidinfo programme affichant la structure delivre
+# par le syscall `get_pid_info` d'un ou plusieurs pids
+bin/get_pid_info/tests/pidinfo:
+	mkdir -p bin/get_pid_info/tests/
+	gcc -Wall -O2 -static -I$(INCLUDE) -o bin/get_pid_info/tests/pidinfo src/get_pid_info/tests/pidinfo.c
+
 # telechargement de l'arborescence linux-4.19.322
 $(LINUX_ARCHIVE):
 	@echo "[DOWNLOAD] $(LINUX_ARCHIVE)"
 	wget -O $(LINUX_ARCHIVE) https://cdn.kernel.org/pub/linux/kernel/v4.x/$(LINUX_ARCHIVE)
 
 
-# Creation d'une vm pour les besoins de l'ecole
+# Creation d'une vm debian
 vm-install:
 	./scripts/vm.sh --install ./disks/debian.img
-# Lancement d'une vm pour les besoins de l'ecole
+# Lancement d'une vm debian
 vm-launch:
 	./scripts/vm.sh --launch ./disks/debian.img
 
@@ -134,12 +149,18 @@ remove-linux:
 
 
 clean:
-	@echo "[CLEAN]"
+	@echo "[CLEAN] ./bin/get_pid_info/tests/*"
+	@rm -rf ./bin/get_pid_info/tests/*
+	@echo "[MRPROPER] /usr/src/linux-4.19.322"
+	@$(MAKE) -C /usr/src/linux-4.19.322 mrproper
 # 	$(MAKE) -C $(LINUX_DIR) mrproper || true # supprime .config arch/x86/boot/bzImage
 
 
 fclean: clean
-	@echo "[FCLEAN]"
-	rm -f $(DEV_ROOTFS_IMG)
+	@echo "[FCLEAN] $(DEV_ROOTFS_IMG)"
+	@rm -f $(DEV_ROOTFS_IMG)
+	@echo "[FCLEAN] /usr/src/linux-4.19.322"
+	@sudo rm -rf /usr/src/linux-4.19.322
 # 	rm -rf $(LINUX_DIR)
-	rm -rf $(LINUX_ARCHIVE)
+	@echo "[FCLEAN] $(LINUX_ARCHIVE)"
+	@rm -rf $(LINUX_ARCHIVE)
