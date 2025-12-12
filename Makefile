@@ -150,7 +150,7 @@ remove-linux:
 		sudo update-initramfs -d -k $(LINUX_VER_TO_RM); \
 		sudo update-grub; \
 	else \
-		echo "[SKIP] linux-$(LINUX_VER_RO_RM) est actuellement en cours d'utilisation"; \
+		echo "[SKIP] linux-$(LINUX_VER_TO_RM) est actuellement en cours d'utilisation"; \
 	fi
 
 
