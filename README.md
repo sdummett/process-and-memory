@@ -1,479 +1,298 @@
-# Utilisation du Makefile
+# process-and-memory: A Custom Linux Syscall (get_pid_info)
 
-Ce projet fournit un `Makefile` qui automatise :
+> Educational project exploring Linux kernel internals by adding a custom syscall, `get_pid_info`, to a patched Linux 4.19.322 kernel. It demonstrates process/task introspection (task_struct, PID namespaces, RCU-protected filesystem state) and the full workflow of patching, building, and testing a custom kernel with QEMU.
 
-- la récupération des sources du noyau Linux 4.19.322 ;
-- l’ajout d’un appel système personnalisé `get_pid_info` ;
-- la compilation et l’installation du noyau ;
-- la création d’une image rootfs minimale (BusyBox) pour les tests avec QEMU ;
-- la création et l’utilisation d’une VM Debian ;
-- la compilation et l’injection de binaires de test dans le rootfs.
+## Overview
 
-Toutes les commandes suivantes se lancent depuis la racine du dépôt.
+`get_pid_info` is a new syscall (number 548) added directly to the Linux 4.19.322 kernel source tree. Given a PID, it returns kernel-side information about the corresponding process: PID, parent PID, uptime, scheduling state, kernel stack pointer, root directory, and current working directory.
 
-> Attention : certaines cibles exécutent des commandes `sudo`  
-> (installation du noyau, mise à jour de GRUB, création de VM, etc.).
+This repository provides everything needed to reproduce the whole pipeline:
 
----
+- the kernel patch itself (`src/get_pid_info/kernel/get_pid_info.c`)
+- a `Makefile` that downloads the kernel source, applies the patch, builds the kernel, and either installs it on the host or boots it in QEMU with a minimal BusyBox rootfs
+- user-space test programs that call the syscall and print the result
 
-## 1. Prérequis
+## What the syscall returns
 
-Avant d’utiliser le `Makefile`, assurez-vous d’avoir :
-
-- Un environnement Linux x86_64 avec les outils de build classiques :
-  - `gcc`, `make`, `wget`, `tar`…
-- `qemu-system-x86_64` pour exécuter le noyau/les VM.
-- Les droits `sudo` pour :
-  - installer un noyau dans `/usr/src` et `/boot` ;
-  - mettre à jour `initramfs` et `grub` ;
-  - gérer les fichiers dans `/lib/modules`.
-
----
-
-## 2. Cibles principales
-
-### 2.1 `make` ou `make all`
-
-```bash
-make
-# ou
-make all
+```c
+typedef struct pid_info {
+    int             pid;
+    void           *stack_pointer;
+    int             age;                          // seconds since fork/exec
+    int             parent_pid;
+    process_state_e state;                        // RUNNING / SLEEPING / ZOMBIE
+    char            root_path[PROCINFO_PATH_MAX];
+    char            current_working_directory[PROCINFO_PATH_MAX];
+} pid_info_t;
 ```
 
-Cette cible construit et **installe le noyau Linux 4.19.322** dans le système en y ajoutant le syscall `get_pid_info`.
+Retrieving this data touches several kernel subsystems: PID lookup (`find_vpid`, `get_pid_task`), scheduling state, the monotonic clock, and RCU-protected access to a process's `fs_struct` to resolve its root and working directory via the VFS. The full breakdown of every kernel structure and helper function involved is documented in [Kernel Internals Reference](#kernel-internals-reference) below.
 
-De manière résumée, elle effectue :
+## Requirements
 
-1. Téléchargement de l’archive du noyau si nécessaire (`linux-4.19.322.tar.xz`).
-2. Décompression et copie des sources vers `/usr/src/linux-4.19.322`.
-3. Ajout du fichier `get_pid_info.c` dans l’arborescence du noyau et mise à jour de la table des syscalls.
-4. Ajout de `get_pid_info.o` dans `kernel/Makefile` si nécessaire.
-5. Configuration du noyau via `defconfig` + activation de `CONFIG_VIRTIO_PCI=y`.
-6. Compilation du noyau (`bzImage`) en utilisant tous les cœurs (moins 1).
-7. Installation du noyau et des modules dans le système (`/boot`, `/lib/modules`…).
-8. Mise à jour de `initramfs` et de `grub`.
+- A Linux x86_64 environment with standard build tools: `gcc`, `make`, `wget`, `tar`
+- `qemu-system-x86_64` to run the custom kernel/VM
+- `sudo` rights, since several targets:
+  - install a kernel into `/usr/src` and `/boot`
+  - update `initramfs` and `grub`
+  - manage files under `/lib/modules`
 
-Utilisez cette cible si vous souhaitez tester ce noyau personnalisé directement sur la machine (en le sélectionnant ensuite dans le menu de boot).
-
----
-
-### 2.2 `make dev`
+## Quick start
 
 ```bash
 make dev
 ```
 
-Cette cible est prévue pour le **développement et les tests rapides** dans une VM QEMU avec un rootfs minimal BusyBox.
+Downloads and patches the kernel (if needed), builds it, creates a BusyBox rootfs, injects the test binaries, and boots everything in QEMU. This is the recommended entry point: it never touches the host's installed kernel.
 
-Elle réalise notamment :
-
-1. Téléchargement + unpack du noyau dans `/usr/src/linux-4.19.322` si besoin.
-2. Configuration du noyau (`defconfig` + `CONFIG_VIRTIO_PCI=y`).
-3. Compilation du noyau dans `/usr/src/linux-4.19.322`.
-4. Création (ou réinstallation) de l’image rootfs de développement `disks/rootfs.ext4`.
-5. Compilation du binaire de test `bin/get_pid_info/tests/test-1`.
-6. Injection du binaire de test dans le rootfs.
-7. Lancement de QEMU via `./scripts/kernel-exec.sh` avec :
-   - le noyau compilé (`arch/x86/boot/bzImage`) ;
-   - l’image rootfs `disks/rootfs.ext4`.
-
-Utilisez `make dev` si vous voulez tester le syscall et les binaires associés **sans installer** le noyau dans le système host.
-
----
-
-### 2.3 `make busybox`
+Once inside the VM:
 
 ```bash
-make busybox
+./pidinfo 1
 ```
 
-Cette cible utilise `QEMU` pour **démarrer le noyau + rootfs BusyBox** déjà construits.
+## Make targets
 
-- Elle suppose que le noyau et le rootfs (`disks/rootfs.ext4`) existent déjà.
-- Elle appelle le script `./scripts/kernel-exec.sh` avec les bons paramètres.
+| Target | Description |
+|--------|-------------|
+| `all` / (default) | Downloads, patches, builds, and **installs** the kernel on the host (`/boot`, `/lib/modules`, `initramfs`, `grub`). Reboot and select kernel 4.19.322 to use it. |
+| `dev` | Builds the patched kernel and boots it in QEMU with a BusyBox rootfs. Does not touch the host system. |
+| `busybox` | Boots an already-built kernel + BusyBox rootfs in QEMU, without rebuilding. |
+| `test-1-in-busybox` | Builds the `test-1` binary and injects it into the BusyBox rootfs. |
+| `pidinfo-in-busybox` | Builds the `pidinfo` binary and injects it into the BusyBox rootfs. |
+| `vm-install` | Creates a Debian VM disk image (`disks/debian.img`) via `scripts/vm.sh`. |
+| `vm-launch` | Boots the previously created Debian VM. |
+| `remove-linux` | Removes kernel 4.19.322 from the host and updates `initramfs`/`grub`, unless it is the kernel currently in use. |
+| `clean` | Light cleanup of build artifacts. |
+| `fclean` | Full cleanup: also removes the rootfs image and the downloaded kernel archive. |
 
-Pratique pour relancer rapidement l’environnement minimal sans recompiler le noyau.
+## Typical workflows
 
----
-
-### 2.4 `make test-1-in-busybox`
-
-```bash
-make test-1-in-busybox
-```
-
-Cette cible :
-
-1. Compile le binaire de test `bin/get_pid_info/tests/test-1` (statiquement, avec les bons `-I` vers `src/get_pid_info/include/`).
-2. Ajoute ce binaire dans le rootfs BusyBox via `./scripts/busybox.sh --add`.
-
-Ensuite, en démarrant la VM BusyBox (`make busybox` ou `make dev`), vous pourrez **exécuter ce test depuis l’intérieur de la VM**.
-
----
-
-### 2.5 `make vm-install`
-
-```bash
-make vm-install
-```
-
-Cette cible sert à **créer une VM Debian** (image disque) via le script :
-
-```bash
-./scripts/vm.sh --install ./disks/debian.img
-```
-
-Elle prépare une image `./disks/debian.img` qui pourra ensuite être lancée.
-
----
-
-### 2.6 `make vm-launch`
-
-```bash
-make vm-launch
-```
-
-Lance la VM Debian précédemment installée :
-
-```bash
-./scripts/vm.sh --launch ./disks/debian.img
-```
-
-Utilisez ce couple `vm-install` / `vm-launch` si vous avez besoin d’un environnement Debian plus complet que le rootfs BusyBox minimal.
-
----
-
-### 2.7 `make remove-linux`
-
-```bash
-make remove-linux
-```
-
-Supprime le noyau 4.19.322 installé dans le système (fichiers `/boot/vmlinuz-4.19.322`, `/lib/modules/4.19.322`, etc.) et met à jour `initramfs` et `grub`, **à condition que ce noyau ne soit pas celui actuellement en cours d’utilisation**.
-
-Concrètement :
-
-- Si `uname -r` ne contient pas `4.19.322`, les fichiers liés à ce noyau sont supprimés et `update-initramfs` / `update-grub` sont exécutés.
-- Sinon, l’opération est annulée avec un message indiquant que le noyau est en cours d’utilisation.
-
----
-
-## 3. Cibles de nettoyage
-
-### 3.1 `make clean`
-
-```bash
-make clean
-```
-
-Actuellement, cette cible se contente d’afficher `[CLEAN]`.  
-Elle est prévue pour être étendue si besoin (par exemple, nettoyage des builds noyau locaux).
-
----
-
-### 3.2 `make fclean`
-
-```bash
-make fclean
-```
-
-Fait un nettoyage plus agressif :
-
-1. Appelle `make clean`.
-2. Supprime l’image rootfs de développement :  
-   `disks/rootfs.ext4`
-3. Supprime l’archive du noyau :  
-   `linux-4.19.322.tar.xz`
-
-Utilisez-la pour revenir à un état quasi vierge (mais sans effacer les sources déjà décompressées dans `/usr/src`).
-
----
-
-## 4. Résumé des workflows typiques
-
-- **Installer le noyau patché sur la machine host**  
+- **Develop and test the syscall in an isolated VM (recommended):**
   ```bash
-  make          # ou make all
+  make dev
   ```
-  Puis sélectionner le noyau `4.19.322` au boot.
-
-- **Développer/tester le syscall dans une VM minimaliste**  
-  ```bash
-  make dev      # compile + lance QEMU sur rootfs BusyBox
-  ```
-  (recommandé pour éviter de rebooter la machine host).
-
-- **Relancer la VM BusyBox déjà prête**  
+- **Re-launch an already built VM without recompiling:**
   ```bash
   make busybox
   ```
-
-- **Injecter (ou réinjecter) le test `test-1` dans le rootfs**  
+- **Install the patched kernel directly on the host machine:**
   ```bash
-  make test-1-in-busybox
+  make
   ```
-
-- **Créer puis lancer une VM Debian plus complète**  
+  Then select kernel `4.19.322` from the boot menu.
+- **Use a fuller Debian VM instead of the minimal BusyBox rootfs:**
   ```bash
   make vm-install
   make vm-launch
   ```
-
-- **Désinstaller le noyau 4.19.322 installé dans le système**  
+- **Uninstall the patched kernel from the host:**
   ```bash
   make remove-linux
   ```
-
-- **Nettoyer les fichiers générés**  
+- **Clean generated files:**
   ```bash
-  make clean    # léger
-  make fclean   # plus agressif (supprime aussi l’archive + rootfs)
+  make clean    # light
+  make fclean   # also removes the rootfs image and the kernel archive
   ```
 
----
----
+## Disclaimer
 
-# Documentation des structures et fonctions noyau utilisées dans `get_pid_info`
-
-Ce document décrit les principales **structures**, **fonctions** et **macros** provenant du noyau Linux et utilisées dans l’implémentation du syscall `get_pid_info`.
+This project patches and boots a custom Linux kernel for learning purposes only. Host-installation targets modify system boot configuration (`/boot`, `grub`, `initramfs`); run them in a disposable environment or VM unless you understand the consequences of a bad kernel installation.
 
 ---
 
-## 1. Structures noyau
+## Kernel Internals Reference
 
-### 1.1 `struct task_struct`
+Reference notes on the kernel structures, functions, and macros used to implement `get_pid_info`.
 
-- Définie dans `<linux/sched.h>`.
-- Représente un **processus** ou un **thread** dans le noyau.
-- Contient notamment :
-  - les identifiants de process (PID, TGID, etc.) accessibles via des helpers comme `task_pid_nr()`,
-  - l’ID du parent via `task_ppid_nr()`,
-  - l’état d’ordonnancement (running, sleeping, zombie, etc.),
-  - les informations de temps (`start_time`, etc.),
-  - un pointeur vers la structure `fs_struct` (`task->fs`),
-  - l’adresse de la pile noyau (`task->stack`),
-  - les structures de planification, cgroups, etc.
+### 1. Kernel structures
 
-Dans le code, on manipule un `struct task_struct *task` obtenu par `get_pid_task()`.
+#### 1.1 `struct task_struct`
 
----
+- Defined in `<linux/sched.h>`.
+- Represents a process or a thread in the kernel.
+- Notably holds:
+  - process identifiers (PID, TGID, etc.), accessible via helpers such as `task_pid_nr()`
+  - the parent's ID via `task_ppid_nr()`
+  - scheduling state (running, sleeping, zombie, etc.)
+  - timing information (`start_time`, etc.)
+  - a pointer to its `fs_struct` (`task->fs`)
+  - the kernel stack address (`task->stack`)
+  - scheduling, cgroup, and other subsystem structures
 
-### 1.2 `struct pid`
+The code obtains a `struct task_struct *task` via `get_pid_task()`.
 
-- Définie dans `<linux/pid.h>`.
-- Représente un identifiant de processus dans le noyau, avec gestion de **références**.
-- C’est un objet plus riche qu’un simple `int` : il gère les différents espaces de PID, les types (PID de thread, de groupe, etc.).
-- On l’obtient par exemple avec `find_vpid(pid)` puis on demande la `task_struct` associée avec `get_pid_task()`.
+#### 1.2 `struct pid`
 
----
+- Defined in `<linux/pid.h>`.
+- Represents a process identifier in the kernel, with reference counting.
+- Richer than a plain `int`: handles multiple PID namespaces and PID types (thread PID, group PID, etc.).
+- Obtained with `find_vpid(pid)`, then the associated `task_struct` is retrieved via `get_pid_task()`.
 
-### 1.3 `struct fs_struct`
+#### 1.3 `struct fs_struct`
 
-- Définie dans `<linux/fs_struct.h>`.
-- Représente l’état « filesystem » d’un processus :
-  - répertoire courant (`pwd`),
-  - répertoire racine (`root`) (par ex. après un `chroot`),
-  - `umask`,
-  - références sur les chemins correspondants.
-- Accessible via le champ `task->fs`.
-- Certains threads noyau n’ont pas de `fs_struct` (d’où le test `if (!fs)` dans le code).
+- Defined in `<linux/fs_struct.h>`.
+- Represents a process's filesystem state:
+  - current directory (`pwd`)
+  - root directory (`root`), which can differ from `/` after a `chroot`
+  - `umask`
+  - references to the corresponding paths
+- Accessible via `task->fs`.
+- Some kernel threads have no `fs_struct`, hence the `if (!fs)` check in the code.
 
----
+#### 1.4 `struct path`
 
-### 1.4 `struct path`
+- Defined in `<linux/path.h>`.
+- Represents a path in the VFS (Virtual File System):
+  - a `struct vfsmount *mnt` (mount point)
+  - a `struct dentry *dentry` (dcache entry)
+- Used with `get_fs_root()` and `get_fs_pwd()` to capture a process's root and current directory respectively.
 
-- Définie dans `<linux/path.h>`.
-- Représente un chemin dans le VFS (Virtual File System) :
-  - un `struct vfsmount *mnt` (montage),
-  - un `struct dentry *dentry` (entrée dans la dcache).
-- Utilisée avec `get_fs_root()` et `get_fs_pwd()` pour stocker respectivement la racine et le répertoire courant d’un processus.
+### 2. Time and clock
 
----
+#### 2.1 `ktime_get_ns()`
 
-## 2. Temps et horloge
+- Returns the current MONOTONIC clock time in nanoseconds (`u64`).
+- The monotonic clock never goes backward; it is relative to system boot, with possible monotonic adjustments.
+- Used here to compute the process's age.
 
-### 2.1 `ktime_get_ns()`
+#### 2.2 `task->start_time`
 
-- Renvoie le temps courant de l’horloge **monotone** (MONOTONIC) en **nanosecondes** (`u64`).
-- L’horloge monotone ne recule pas et est relative au boot de la machine (avec ajustements monotoniques éventuels).
-- Le code l’utilise pour calculer l’âge du processus.
+- Field of `struct task_struct`.
+- Timestamp of process creation (fork/exec), in nanoseconds.
+- Combined with `ktime_get_ns()`, gives the process's lifetime.
 
----
+#### 2.3 `NSEC_PER_SEC`
 
-### 2.2 `task->start_time`
+- Macro defining the number of nanoseconds in a second (`1000000000`).
+- Used to convert a nanosecond interval into whole seconds.
 
-- Champ de `struct task_struct`.
-- Timestamp de création du processus (fork/exec), en nanosecondes.
-- En le combinant avec `ktime_get_ns()`, on obtient la durée de vie du process.
+### 3. PID, tasks, and states
 
----
+#### 3.1 `task_state_to_char(struct task_struct *task)`
 
-### 2.3 `NSEC_PER_SEC`
-
-- Macro définissant le nombre de nanosecondes dans une seconde : `1000000000`.
-- Permet de convertir un intervalle exprimé en nanosecondes en secondes entières.
-
----
-
-## 3. PID, tâches et états
-
-### 3.1 `task_state_to_char(struct task_struct *task)`
-
-- Helper défini dans `<linux/sched.h>`.
-- Convertit l’état interne du processus (`task->state`, `task->exit_state`, etc.) en un **caractère** :
-  - `'R'` : running,
-  - `'S'` : sleeping,
-  - `'D'` : uninterruptible sleep,
-  - `'T'` : stopped/traced,
-  - `'Z'` : zombie,
+- Helper defined in `<linux/sched.h>`.
+- Converts a process's internal state (`task->state`, `task->exit_state`, etc.) into a character:
+  - `'R'`: running
+  - `'S'`: sleeping
+  - `'D'`: uninterruptible sleep
+  - `'T'`: stopped/traced
+  - `'Z'`: zombie
   - etc.
-- Le code mappe ce caractère vers l’`enum process_state_e` utilisateur (`PROC_STATE_RUNNING`, `PROC_STATE_SLEEPING`, `PROC_STATE_ZOMBIE`).
+- The code maps this character to the user-facing `enum process_state_e` (`PROC_STATE_RUNNING`, `PROC_STATE_SLEEPING`, `PROC_STATE_ZOMBIE`).
 
----
+#### 3.2 `task_pid_nr(struct task_struct *task)`
 
-### 3.2 `task_pid_nr(struct task_struct *task)`
+- Returns a task's PID (`int`) in the visible PID namespace.
+- Avoids handling `struct pid` directly.
+- Used here to fill `kpid_info.pid`.
 
-- Helper pour obtenir le **PID** (int) d’un `task_struct` dans l’espace PID visible.
-- Évite de gérer directement les structures `struct pid`.
-- Utilisé dans le code pour remplir `kpid_info.pid`.
+#### 3.3 `task_ppid_nr(struct task_struct *task)`
 
----
+- Same idea as `task_pid_nr()`, but returns the parent's ID (PPID).
+- Used to fill `kpid_info.parent_pid`.
 
-### 3.3 `task_ppid_nr(struct task_struct *task)`
+#### 3.4 `find_vpid(int nr)`
 
-- Similaire à `task_pid_nr()`, mais renvoie l’ID du **parent** (PPID).
-- Utilisé pour remplir `kpid_info.parent_pid`.
+- Defined in `<linux/pid.h>`.
+- Looks up a `struct pid *` for number `nr` in the global PID namespace.
+- Increments the refcount on the found `pid` object.
+- Returns `NULL` if no process has this PID.
 
----
+#### 3.5 `get_pid_task(struct pid *pid, enum pid_type type)`
 
-### 3.4 `find_vpid(int nr)`
+- Also in `<linux/pid.h>`.
+- From a `struct pid *` and a type (`PIDTYPE_PID`, `PIDTYPE_TGID`, etc.), returns the associated `struct task_struct *`.
+- Increments the task's refcount (like `get_task_struct()`).
+- Returns `NULL` if no task matches.
 
-- Définie dans `<linux/pid.h>`.
-- Recherche un objet `struct pid *` pour le numéro `nr` dans l’espace global des PID.
-- Incrémente le refcount sur l’objet `pid` trouvé.
-- Retourne NULL si aucun processus n’a ce PID.
+#### 3.6 `PIDTYPE_PID`
 
----
+- PID type designating an individual process or thread.
+- Passed to `get_pid_task()` to get the task associated with this "classic" PID.
 
-### 3.5 `get_pid_task(struct pid *pid, enum pid_type type)`
+#### 3.7 `put_task_struct(struct task_struct *task)`
 
-- Toujours dans `<linux/pid.h>`.
-- À partir d’un `struct pid *` et d’un type (`PIDTYPE_PID`, `PIDTYPE_TGID`, etc.), renvoie le `struct task_struct *` associé.
-- Incrémente le refcount de la task (comme `get_task_struct()`).
-- Retourne NULL si aucune task ne correspond.
+- Reference-counting function for `task_struct`.
+- Decrements the refcount on the task obtained earlier (here, via `get_pid_task()`).
+- Once the refcount reaches zero, the structure can be freed.
 
----
+### 4. RCU and synchronization
 
-### 3.6 `PIDTYPE_PID`
+#### 4.1 `rcu_read_lock()` / `rcu_read_unlock()`
 
-- Type de PID utilisé pour désigner un processus ou thread individuel.
-- Passé à `get_pid_task()` pour obtenir la task associée à ce PID « classique ».  
+- RCU (Read-Copy-Update) primitives protecting reads of shared data.
+- `task->fs` is RCU-protected; it must be accessed under `rcu_read_lock()`.
+- Guarantees the read value will not be freed while the RCU critical section is open.
 
----
+### 5. Filesystem-related functions
 
-### 3.7 `put_task_struct(struct task_struct *task)`
+#### 5.1 `get_fs_root(struct fs_struct *fs, struct path *root)`
 
-- Fonction de gestion de **référence** sur les `task_struct`.
-- Décrémente le refcount sur la task obtenu précédemment (ici via `get_pid_task()`).
-- Lorsque le refcount atteint zéro, la structure peut être libérée.
+- Defined in `<linux/fs_struct.h>`.
+- Retrieves the process's root directory (possibly different from `/` because of `chroot`).
+- Increments references on the resulting `struct path` and its underlying objects.
 
----
+#### 5.2 `get_fs_pwd(struct fs_struct *fs, struct path *pwd)`
 
-## 4. RCU et synchronisation
+- Also in `<linux/fs_struct.h>`.
+- Retrieves the process's current working directory.
+- Takes a reference on the returned `struct path`.
 
-### 4.1 `rcu_read_lock()` / `rcu_read_unlock()`
+#### 5.3 `d_path(const struct path *path, char *buf, int buflen)`
 
-- Primitives RCU (Read-Copy-Update) pour protéger les lectures sur des données partagées.
-- `task->fs` est protégé par RCU ; il doit être accédé sous `rcu_read_lock()`.
-- Garantit que la valeur lue ne sera pas libérée tant que la section critique RCU est ouverte.
+- VFS function converting a `struct path` into a readable absolute path.
+- Returns a pointer into `buf`, or an error pointer (encoded via `ERR_PTR()`).
+- Used to fill the root and cwd paths in the user-facing struct.
 
----
+#### 5.4 `path_put(struct path *path)`
 
-## 5. Fonctions liées au filesystem
+- Releases a reference on a `struct path` obtained via `get_fs_root()` or `get_fs_pwd()`.
+- Decrements refcounts on the associated dentry and vfsmount.
 
-### 5.1 `get_fs_root(struct fs_struct *fs, struct path *root)`
+#### 5.5 `PATH_MAX`
 
-- Définie dans `<linux/fs_struct.h>`.
-- Récupère la **racine** (`root`) du process (éventuellement différente de `/` à cause de `chroot`).
-- Incrémente les références sur le `struct path` résultat (et sous-jacents).
+- Constant defining the maximum path length in the kernel.
+- Used to allocate the temporary buffer passed to `d_path()`.
 
-### 5.2 `get_fs_pwd(struct fs_struct *fs, struct path *pwd)`
+### 6. Kernel memory allocation
 
-- Également dans `<linux/fs_struct.h>`.
-- Récupère le **répertoire courant** (`pwd`) du process.
-- Prend une référence sur le `struct path` retourné.
+#### 6.1 `kmalloc(size_t size, gfp_t flags)`
 
----
+- Kernel-space memory allocation function.
+- `GFP_KERNEL`: standard allocation, allowed to sleep (process context).
+- Returns a valid pointer, or `NULL` on failure.
 
-### 5.3 `d_path(const struct path *path, char *buf, int buflen)`
+#### 6.2 `kfree(const void *objp)`
 
-- Fonction du VFS qui convertit un `struct path` en **chemin absolu** lisible.
-- Retourne un pointeur dans le buffer `buf` ou un pointeur d’erreur (encodé via `ERR_PTR()`).
-- Utilisée pour répercuter les chemins root et cwd dans la struct utilisateur.
+- Frees memory previously allocated with `kmalloc` or equivalent.
 
----
+#### 6.3 `GFP_KERNEL`
 
-### 5.4 `path_put(struct path *path)`
+- Flag passed to `kmalloc` indicating a "normal" kernel-side allocation context (may sleep / trigger reclaim).
 
-- Libère une référence sur un `struct path` obtenue par `get_fs_root()` ou `get_fs_pwd()`.
-- Décrémente les refcounts sur la dentry et le vfsmount associés.
+### 7. User/kernel space access
 
----
+#### 7.1 `copy_to_user(void __user *to, const void *from, unsigned long n)`
 
-### 5.5 `PATH_MAX`
+- Defined in `<linux/uaccess.h>`.
+- Copies `n` bytes from kernel space (`from`) to user space (`to`).
+- Validates the user address and handles page faults.
+- Returns the number of bytes **not** copied (0 on success).
 
-- Constante définissant la taille maximale d’un chemin dans le noyau.
-- Utilisée pour allouer le buffer temporaire passé à `d_path()`.
+#### 7.2 `__user` annotation
 
----
+- Used in `struct pid_info __user *upid_info`.
+- Marks a pointer as pointing to user space.
+- Helps static analysis and security-checking tools catch misuse.
 
-## 6. Allocation mémoire noyau
+### 8. Syscall infrastructure and logging
 
-### 6.1 `kmalloc(size_t size, gfp_t flags)`
+#### 8.1 `SYSCALL_DEFINE2`
 
-- Fonction d’allocation mémoire en espace noyau.
-- `GFP_KERNEL` : allocation standard, autorisée à dormir (contexte process).
-- Retourne un pointeur valide ou `NULL` en cas d’échec.
-
----
-
-### 6.2 `kfree(const void *objp)`
-
-- Libération de mémoire précédemment allouée par `kmalloc` ou équivalent.
-
----
-
-### 6.3 `GFP_KERNEL`
-
-- Flag passé à `kmalloc` pour indiquer un contexte d’allocation « normal » côté noyau (peut dormir / faire du reclaim).
-
----
-
-## 7. Accès espace utilisateur / noyau
-
-### 7.1 `copy_to_user(void __user *to, const void *from, unsigned long n)`
-
-- Définie dans `<linux/uaccess.h>`.
-- Copie `n` octets depuis l’espace noyau (`from`) vers l’espace utilisateur (`to`).
-- Vérifie la validité de l’adresse utilisateur et gère les fautes de page.
-- Retourne le nombre d’octets **non copiés** (0 si succès).
-
----
-
-### 7.2 Annotation `__user`
-
-- Utilisée dans `struct pid_info __user *upid_info`.
-- Indique qu’il s’agit d’un pointeur vers l’espace **utilisateur**.
-- Aide les outils d’analyse statique et de vérification de sécurité à détecter les erreurs d’usage.
-
----
-
-## 8. Infrastructure syscall et logging
-
-### 8.1 `SYSCALL_DEFINE2`
-
-- Macro définie dans `<linux/syscalls.h>` pour déclarer un syscall avec 2 arguments.
-- Exemple :
+- Macro defined in `<linux/syscalls.h>` to declare a syscall taking two arguments.
+- Example:
 
 ```c
 SYSCALL_DEFINE2(get_pid_info,
@@ -481,55 +300,43 @@ SYSCALL_DEFINE2(get_pid_info,
                 int, pid)
 ```
 
-- Génère la fonction avec la bonne signature et l’intègre à la table des syscalls (selon l’architecture et la configuration).
+- Generates the function with the correct calling convention and wires it into the syscall table (per architecture and kernel configuration).
 
----
+#### 8.2 `pr_info(...)` and `pr_err(...)`
 
-### 8.2 `pr_info(...)` et `pr_err(...)`
+- Kernel logging macros:
+  - `pr_info`: informational messages
+  - `pr_err`: error messages
+- Both build on `printk` internally.
+- Messages are visible via `dmesg` or the system journal.
 
-- Macros de **log noyau** :
-  - `pr_info` : messages d’information,
-  - `pr_err` : messages d’erreur.
-- S’appuient sur `printk` en interne.
-- Les messages sont visibles via `dmesg` ou le journal du système.
+#### 8.3 Error codes: `-EINVAL`, `-ESRCH`, `-EFAULT`
 
----
+- Standard kernel error values (defined in `<linux/errno.h>`), returned by the syscall:
+  - `-EINVAL`: invalid argument (e.g. `upid_info == NULL`)
+  - `-ESRCH`: process not found (`find_vpid` or `get_pid_task` failed)
+  - `-EFAULT`: invalid or inaccessible user address (`copy_to_user` failed)
 
-### 8.3 Codes d’erreur `-EINVAL`, `-ESRCH`, `-EFAULT`
+### 9. String and memory utility functions
 
-- Valeurs standard d’erreurs dans le noyau (définies dans `<linux/errno.h>`), renvoyées par les syscalls :
-  - `-EINVAL` : argument invalide (par ex. `upid_info == NULL`),
-  - `-ESRCH` : processus introuvable (`find_vpid` ou `get_pid_task` a échoué),
-  - `-EFAULT` : adresse utilisateur invalide ou non accessible (échec de `copy_to_user`).
+#### 9.1 `memset(void *s, int c, size_t n)`
 
----
+- Sets a memory region to value `c` over `n` bytes.
+- Used to zero out `kpid_info` before filling it.
 
-## 9. Fonctions utilitaires de chaîne et mémoire
+#### 9.2 `strlcpy(char *dst, const char *src, size_t size)`
 
-### 9.1 `memset(void *s, int c, size_t n)`
+- Copies a string from `src` to `dst` with a size limit, guaranteeing NUL termination when `size > 0`.
+- Safer than `strcpy`: avoids buffer overflows through controlled truncation.
 
-- Initialise une zone mémoire à la valeur `c` sur `n` octets.
-- Utilisée pour zero-iser la structure `kpid_info` avant remplissage.
+#### 9.3 `IS_ERR(ptr)`
 
----
+- Macro testing whether a pointer encodes an error.
+- Some functions (like `d_path`) return either a valid pointer or an error pointer created with `ERR_PTR(-errno)`.
+- `IS_ERR(p)` distinguishes between the two cases.
 
-### 9.2 `strlcpy(char *dst, const char *src, size_t size)`
+### 10. The `task->stack` field
 
-- Copie une chaîne de `src` vers `dst` avec limite de taille, en garantissant la terminaison `\00` si `size > 0`.
-- Plus sûre que `strcpy`, évite les dépassements de buffer (troncation contrôlée).
-
----
-
-### 9.3 `IS_ERR(ptr)`
-
-- Macro pour tester si un pointeur encode une **erreur**.
-- Certaines fonctions (comme `d_path`) renvoient soit un pointeur valide, soit un pointeur d’erreur créé avec `ERR_PTR(-errno)`.
-- `IS_ERR(p)` permet de distinguer les deux cas.
-
----
-
-## 10. Champ `task->stack`
-
-- Champ de `struct task_struct` qui pointe vers la **pile noyau** du thread/process.
-- Dans votre code, il est utilisé pour renseigner `kpid_info.stack_pointer`.
-- C’est une adresse en espace noyau, uniquement utile pour le debug / diagnostic, pas exploitable directement en espace utilisateur.
+- Field of `struct task_struct` pointing to the thread/process's kernel stack.
+- Used here to fill `kpid_info.stack_pointer`.
+- A kernel-space address, useful only for debugging/diagnostics, not directly usable from user space.
